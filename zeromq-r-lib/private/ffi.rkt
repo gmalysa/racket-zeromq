@@ -54,7 +54,10 @@
            push = 8
            xpub = 9
            xsub = 10
-           stream = 11)
+           stream = 11
+           server = 12
+           client = 13
+           )
          _int))
 
 (define _zmq_socket_option
@@ -319,3 +322,10 @@
 (define-zmq zmq_msg_send
   (_fun* _zmq_msg-pointer _zmq_socket-pointer _zmq_sendrecv_flags
          -> _int))
+
+(define-zmq zmq_msg_routing_id
+  (_fun _zmq_msg-pointer -> _uint32)
+  #:fail (lambda () (lambda (msg) 0)))
+
+(define-zmq zmq_msg_set_routing_id
+  (_fun _zmq_msg-pointer _uint32 -> _int))
