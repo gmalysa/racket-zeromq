@@ -57,6 +57,11 @@
            stream = 11
            server = 12
            client = 13
+           radio  = 14
+           dish   = 15
+           gather = 16
+           scatter = 17
+           dgram = 18
            )
          _int))
 
