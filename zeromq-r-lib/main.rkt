@@ -75,26 +75,26 @@
 ;; There is one implicit context created on demand, only finalized
 ;; when the namespace goes away.
 
-(define the-ctx #f)
+(define the-ctx (box #f))
 
-;; -get-ctx : -> Context
-(define (-get-ctx)
-  (unless the-ctx
+;; get-ctx : -> Context
+(define (get-ctx)
+  (unless (unbox the-ctx)
     (log-zmq-debug "creating zmq_ctx")
     (define ctx (zmq_ctx_new))
     (register-finalizer ctx
       (lambda (ctx)
         (log-zmq-debug "destroying zmq_ctx")
         (zmq_ctx_destroy ctx)))
-    (set! the-ctx ctx))
-  the-ctx)
+    (box-cas! the-ctx #f ctx))
+  (unbox the-ctx))
 
 ;; ============================================================
 ;; Socket
 
 ;; A Socket is (socket (U _zmq_socket-pointer #f) Sema (Listof Endpoint))
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket ([ptr #:mutable] sema [ends #:mutable])
+(struct socket ([ptr #:mutable] sema [ends #:mutable] sock-evt)
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
@@ -129,16 +129,13 @@
   (unless zmq-lib
     (error 'zmq-socket "could not find libzmq library\n  error: ~s"
            zmq-load-fail-reason))
-  (start-atomic)
-  (define ctx (-get-ctx))
-  (define ptr (zmq_socket ctx type))
+  (define ptr (zmq_socket (get-ctx) type))
   (unless ptr
-    (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket ptr (make-semaphore 1) null))
+  (define fd (zmq_getsockopt/int ptr 'fd))
+  (define sock (socket ptr (make-semaphore 1) null (fd->evt fd 'read)))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
-  (end-atomic)
   ;; Set options, etc.
   (zmq-set-option sock 'linger DEFAULT-LINGER)
   (when identity (zmq-set-option sock 'identity identity))
@@ -168,7 +165,7 @@
 (define (fd->evt fd mode)
   ;; The fd *must* be interpreted as a socket on Windows and Mac OS.
   ;; On Linux it does not seem to matter.
-  (unsafe-fd->evt fd mode #t))
+  (unsafe-socket->semaphore fd mode))
 
 (define (zmq-closed? sock)
   (call-as-atomic (lambda () (and (socket-ptr sock) #t))))
@@ -353,20 +350,13 @@
                   (add1 n) (+ n (length frames)) (errno-lines)))]))
 
 (define (wait who sock event)
-  (start-atomic)
   (define ptr (socket-ptr sock))
-  (unless ptr
-    (end-atomic)
-    (error who "socket is closed"))
+  (unless ptr (error who "socket is closed"))
   (define events (zmq_getsockopt/int ptr 'events))
-  (cond [(positive? (bitwise-and events event))
-         (end-atomic)]
+  (cond [(positive? (bitwise-and events event)) (void)]
         [else
-         (define fd (zmq_getsockopt/int ptr 'fd))
-         (define fdsema (fd->evt fd 'read))
-         (end-atomic)
-         (log-zmq-debug "~s wait; fd = ~s, socket = ~e" who fd sock)
-         (sync fdsema)
+         (log-zmq-debug "~s wait; socket = ~e" who sock)
+         (sync (socket-sock-evt sock))
          (wait who sock event)]))
 
 (define (zmq-recv sock #:who [who 'zmq-recv])
