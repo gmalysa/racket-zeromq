@@ -216,10 +216,6 @@
 (define-zmq zmq_close
   (_fun* _zmq_socket-pointer -> _int))
 
-(define-zmq zmq_proxy
-  (_fun* _zmq_socket-pointer _zmq_socket-pointer _zmq_socket-pointer/null
-         -> _int))
-
 ;; ----------------------------------------
 ;; Socket Options
 

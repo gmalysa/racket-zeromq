@@ -39,7 +39,7 @@
           [zmq-unbind
            (->* [zmq-socket?] [] #:rest (listof bind-addr/c) void?)]
           [zmq-proxy
-            (->* [zmq-socket? zmq-socket?] [zmq-socket?] void?)]
+            (-> zmq-socket? zmq-socket? void?)]
           [zmq-subscribe
            (->* [zmq-socket?] [] #:rest (listof subscription/c) void?)]
           [zmq-unsubscribe
@@ -189,16 +189,13 @@
 ;; ----------------------------------------
 ;; Helpers
 
+(define (zmq-ready? s [event ZMQ_POLLIN])
+  (eq? (bitwise-and (zmq_getsockopt/int (socket-ptr s) 'events)
+                    event)
+       event))
+
 (define (call-with-socket-ptr who sock proc #:sema? [sema? #t])
   (proc (socket-ptr sock)))
-;  (define (inner)
-;    (call-as-atomic
-;     (lambda ()
-;       (define ptr (socket-ptr sock))
-;       (unless ptr (error who "socket is closed"))
-;       (proc ptr))))
-;  (cond [sema? (call-with-semaphore (socket-sema sock) inner)]
-;        [else (inner)]))
 
 (define (errno-lines)
   (format "\n  errno: ~s\n  error: ~.a" (saved-errno) (zmq_strerror (saved-errno))))
@@ -305,14 +302,6 @@
 (define (-sub-end! sock ptr mode addr)
   (set-socket-ends! sock (remove (cons mode addr) (socket-ends sock))))
 
-(define (zmq-proxy router dealer [capture #f])
-  (zmq_proxy (socket-ptr router)
-             (socket-ptr router)
-             (if (not (eq? capture #f))
-                 (socket-ptr capture)
-                 #f))
-  (void))
-
 ;; ----------------------------------------
 ;; Subscriptions
 
@@ -358,14 +347,10 @@
       [else (error 'send-frames "error sending message in zmq-send")])))
 
 (define (wait who sock event)
-  (define ptr (socket-ptr sock))
-  (unless ptr (error who "socket is closed"))
-  (define events (zmq_getsockopt/int ptr 'events))
-  (cond [(positive? (bitwise-and events event)) (void)]
-        [else
-         (log-zmq-debug "~s wait; socket = ~e" who sock)
-         (sync (zmq-evt sock))
-         (wait who sock event)]))
+  (sync (zmq-evt sock))
+  (unless (zmq-ready? sock event)
+    (log-zmq-debug "~s wait: socket = ~e" who sock)
+    (wait who sock event)))
 
 (define (zmq-recv sock #:who [who 'zmq-recv])
   (define frames (zmq-recv* sock #:who who))
@@ -413,6 +398,38 @@
   (define frame (make-bytes size))
   (memcpy frame (zmq_msg_data msg) size)
   frame)
+
+; Define a racket-friend zmq_proxy that transfers frames between two sockets
+; as given. Also don't decode the data into racket
+(define (zmq-proxy left right)
+  (sync (zmq-evt left) (zmq-evt right))
+  (when (zmq-ready? left ZMQ_POLLIN)
+    (proxy-fwd (socket-ptr left) (socket-ptr right)))
+  (when (zmq-ready? right ZMQ_POLLIN)
+    (proxy-fwd (socket-ptr right) (socket-ptr left))))
+
+(define (proxy-fwd src dst)
+  (let* ([msg (new-zmq_msg)]
+         [s (begin
+              (zmq_msg_init msg)
+              (zmq_msg_recv msg src '(ZMQ_NOFLAGS)))]
+         [more (zmq_msg_more msg)]
+         [moreflag (if more
+                       '(ZMQ_SNDMORE)
+                       '(ZMQ_NOFLAGS))])
+    (cond
+      [(>= s 0)
+        (zmq_msg_send msg dst moreflag)
+        (zmq_msg_close msg)
+        (when more (proxy-fwd src dst))]
+      [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
+        (zmq_msg_close msg)
+        (proxy-fwd src dst)]
+      [else
+        (zmq_msg_close msg)
+        (error 'proxy-fwd
+               "error forwarding between proxy endpoints ~a"
+               (saved-errno))])))
 
 ;; ============================================================
 
