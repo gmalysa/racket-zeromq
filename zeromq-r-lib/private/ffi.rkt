@@ -167,6 +167,7 @@
 
 (define _zmq_sendrecv_flags
   (_bitmask '(
+              ZMQ_NOFLAGS = 0
               ZMQ_DONTWAIT = 1
               ZMQ_SNDMORE  = 2
               )

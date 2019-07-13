@@ -122,9 +122,9 @@
 (define (zmq-socket? v) (socket? v))
 
 ; Access event for synchronizing on this socket
-(define (zmq-evt s)
+(define (zmq-evt s [mode 'read])
   (if (socket-ptr s)
-      (unsafe-socket->semaphore (socket-fd s) 'read)
+      (unsafe-socket->semaphore (socket-fd s) mode)
       always-evt))
 
 ;; ------------------------------------------------------------
@@ -344,28 +344,18 @@
   (zmq-send* sock (cons part1 parts) #:who 'zmq-send))
 
 (define (zmq-send* sock parts #:who [who 'zmq-send*])
-  (define frames (map coerce->bytes parts))
-  (send-frames who sock 0 frames))
+  (send-frames (socket-ptr sock) (map coerce->bytes parts)))
 
-(define (send-frames who sock n frames)
-  ((call-with-socket-ptr who sock #:sema? #f
-     (lambda (ptr) (-send-frames-k who sock ptr n frames)))))
-
-(define (-send-frames-k who sock ptr n frames)
-  (define last? (null? (cdr frames)))
-  (define s (zmq_send ptr (car frames) (if last? '(ZMQ_DONTWAIT) '(ZMQ_DONTWAIT ZMQ_SNDMORE))))
-  (cond [(>= s 0)
-         (if (pair? (cdr frames))
-             (-send-frames-k who sock ptr (add1 n) (cdr frames))
-             (lambda () (void)))]
-        [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-         (lambda ()
-           (wait who sock ZMQ_POLLOUT)
-           (send-frames who sock n frames))]
-        [else
-         (lambda ()
-           (error who "error sending message\n  frame: ~s of ~s~a"
-                  (add1 n) (+ n (length frames)) (errno-lines)))]))
+(define (send-frames ptr frames)
+  (let* ([s (if (null? (cdr frames))
+                (zmq_send ptr (car frames) '(ZMQ_NOFLAGS))
+                (zmq_send ptr (car frames) '(ZMQ_SNDMORE)))])
+    (cond
+      [(>= s 0) (unless (null? (cdr frames))
+                  (send-frames ptr (cdr frames)))]
+      [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
+        (send-frames ptr frames)]
+      [else (error 'send-frames "error sending message in zmq-send")])))
 
 (define (wait who sock event)
   (define ptr (socket-ptr sock))
