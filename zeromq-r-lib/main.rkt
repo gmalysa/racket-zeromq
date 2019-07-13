@@ -16,6 +16,8 @@
                  #:connect (or/c connect-addr/c (listof connect-addr/c))
                  #:subscribe (or/c subscription/c (listof subscription/c))]
                 zmq-socket?)]
+          [zmq-evt
+            (-> zmq-socket? evt?)]
           [zmq-close
            (-> zmq-socket? void?)]
           [zmq-closed?
@@ -96,7 +98,7 @@
 
 ;; A Socket is (socket (U _zmq_socket-pointer #f) Sema (Listof Endpoint))
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket ([ptr #:mutable] sema [ends #:mutable] sock-evt)
+(struct socket ([ptr #:mutable] sema [ends #:mutable] fd)
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
@@ -119,6 +121,12 @@
 
 (define (zmq-socket? v) (socket? v))
 
+; Access event for synchronizing on this socket
+(define (zmq-evt s)
+  (if (socket-ptr s)
+      (unsafe-socket->semaphore (socket-fd s) 'read)
+      always-evt))
+
 ;; ------------------------------------------------------------
 ;; Socket
 
@@ -135,7 +143,7 @@
   (unless ptr
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
   (define fd (zmq_getsockopt/int ptr 'fd))
-  (define sock (socket ptr (make-semaphore 1) null (fd->evt fd 'read)))
+  (define sock (socket ptr (make-semaphore 1) null fd))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   ;; Set options, etc.
@@ -182,14 +190,15 @@
 ;; Helpers
 
 (define (call-with-socket-ptr who sock proc #:sema? [sema? #t])
-  (define (inner)
-    (call-as-atomic
-     (lambda ()
-       (define ptr (socket-ptr sock))
-       (unless ptr (error who "socket is closed"))
-       (proc ptr))))
-  (cond [sema? (call-with-semaphore (socket-sema sock) inner)]
-        [else (inner)]))
+  (proc (socket-ptr sock)))
+;  (define (inner)
+;    (call-as-atomic
+;     (lambda ()
+;       (define ptr (socket-ptr sock))
+;       (unless ptr (error who "socket is closed"))
+;       (proc ptr))))
+;  (cond [sema? (call-with-semaphore (socket-sema sock) inner)]
+;        [else (inner)]))
 
 (define (errno-lines)
   (format "\n  errno: ~s\n  error: ~.a" (saved-errno) (zmq_strerror (saved-errno))))
@@ -336,8 +345,7 @@
 
 (define (zmq-send* sock parts #:who [who 'zmq-send*])
   (define frames (map coerce->bytes parts))
-  (call-with-semaphore (socket-sema sock)
-    (lambda () (send-frames who sock 0 frames))))
+  (send-frames who sock 0 frames))
 
 (define (send-frames who sock n frames)
   ((call-with-socket-ptr who sock #:sema? #f
@@ -366,7 +374,7 @@
   (cond [(positive? (bitwise-and events event)) (void)]
         [else
          (log-zmq-debug "~s wait; socket = ~e" who sock)
-         (sync (socket-sock-evt sock))
+         (sync (zmq-evt sock))
          (wait who sock event)]))
 
 (define (zmq-recv sock #:who [who 'zmq-recv])
@@ -380,8 +388,7 @@
   (bytes->string/utf-8 msg))
 
 (define (zmq-recv* sock #:who [who 'zmq-recv*])
-  (call-with-semaphore (socket-sema sock)
-    (lambda () (recv-frames who sock null))))
+  (recv-frames who sock null))
 
 (define (recv-frames who sock rframes)
   ((call-with-socket-ptr who sock #:sema? #f

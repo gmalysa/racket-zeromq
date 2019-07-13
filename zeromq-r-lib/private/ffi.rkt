@@ -114,7 +114,7 @@
            [curve_secretkey . (r w bytes)]
            [curve_server .    (r w int)]
            [curve_serverkey . (r w bytes)]
-           [events .          (- - int)]
+           [events .          (r - int)]
            [fd .              (- - int)]
            [identity .        (r w bytes)]
            [immediate .       (r w int)] ;; ??
