@@ -36,6 +36,8 @@
            (->* [zmq-socket?] [] #:rest (listof connect-addr/c) void?)]
           [zmq-unbind
            (->* [zmq-socket?] [] #:rest (listof bind-addr/c) void?)]
+          [zmq-proxy
+            (->* [zmq-socket? zmq-socket?] [zmq-socket?] void?)]
           [zmq-subscribe
            (->* [zmq-socket?] [] #:rest (listof subscription/c) void?)]
           [zmq-unsubscribe
@@ -293,6 +295,14 @@
 
 (define (-sub-end! sock ptr mode addr)
   (set-socket-ends! sock (remove (cons mode addr) (socket-ends sock))))
+
+(define (zmq-proxy router dealer [capture #f])
+  (zmq_proxy (socket-ptr router)
+             (socket-ptr router)
+             (if (not (eq? capture #f))
+                 (socket-ptr capture)
+                 #f))
+  (void))
 
 ;; ----------------------------------------
 ;; Subscriptions
