@@ -404,13 +404,12 @@
 (define (zmq-proxy left right)
   (sync (zmq-evt left) (zmq-evt right))
   (when (zmq-ready? left ZMQ_POLLIN)
-    (proxy-fwd (socket-ptr left) (socket-ptr right)))
+    (proxy-fwd (new-zmq_msg) (socket-ptr left) (socket-ptr right)))
   (when (zmq-ready? right ZMQ_POLLIN)
-    (proxy-fwd (socket-ptr right) (socket-ptr left))))
+    (proxy-fwd (new-zmq_msg) (socket-ptr right) (socket-ptr left))))
 
-(define (proxy-fwd src dst)
-  (let* ([msg (new-zmq_msg)]
-         [s (begin
+(define (proxy-fwd msg src dst)
+  (let* ([s (begin
               (zmq_msg_init msg)
               (zmq_msg_recv msg src '(ZMQ_NOFLAGS)))]
          [more (zmq_msg_more msg)]
@@ -421,10 +420,10 @@
       [(>= s 0)
         (zmq_msg_send msg dst moreflag)
         (zmq_msg_close msg)
-        (when more (proxy-fwd src dst))]
+        (when more (proxy-fwd msg src dst))]
       [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
         (zmq_msg_close msg)
-        (proxy-fwd src dst)]
+        (proxy-fwd msg src dst)]
       [else
         (zmq_msg_close msg)
         (error 'proxy-fwd
