@@ -124,7 +124,9 @@
 ; Access event for synchronizing on this socket
 (define (zmq-evt s [mode 'read])
   (if (socket-ptr s)
-      (unsafe-socket->semaphore (socket-fd s) mode)
+      (if (not (zmq-ready? s))
+          (unsafe-socket->semaphore (socket-fd s) mode)
+          always-evt)
       always-evt))
 
 ;; ------------------------------------------------------------
