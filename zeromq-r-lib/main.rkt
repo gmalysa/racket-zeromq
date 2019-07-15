@@ -194,9 +194,6 @@
                     event)
        event))
 
-(define (call-with-socket-ptr who sock proc #:sema? [sema? #t])
-  (proc (socket-ptr sock)))
-
 (define (errno-lines)
   (format "\n  errno: ~s\n  error: ~.a" (saved-errno) (zmq_strerror (saved-errno))))
 
@@ -211,18 +208,17 @@
   (define type (socket-option-type who option))
   (unless (socket-option-read? option)
     (error who "socket option is not readable\n  option: ~e" option))
-  (call-with-socket-ptr who sock
-    (lambda (ptr)
-      (let ([v (case type
-                 [(int)     (zmq_getsockopt/int ptr option)]
-                 [(int64)   (zmq_getsockopt/int64 ptr option)]
-                 [(uint64)  (zmq_getsockopt/uint64 ptr option)]
-                 [(bytes)   (zmq_getsockopt/bytes ptr option)]
-                 [(bytes0)  (zmq_getsockopt/bytes ptr option -1)])])
-        (unless v
-          (error who "error getting socket option\n  option: ~e~a"
-                 option (errno-lines)))
-        v))))
+  (let* ([ptr (socket-ptr sock)]
+         [v (case type
+              [(int)     (zmq_getsockopt/int ptr option)]
+              [(int64)   (zmq_getsockopt/int64 ptr option)]
+              [(uint64)  (zmq_getsockopt/uint64 ptr option)]
+              [(bytes)   (zmq_getsockopt/bytes ptr option)]
+              [(bytes0)  (zmq_getsockopt/bytes ptr option -1)])])
+    (unless v
+      (error who "error getting socket option\n  option: ~e~a"
+             option (errno-lines)))
+    v))
 
 (define (zmq-set-option sock option value
                         #:who [who 'zmq-set-option])
@@ -237,16 +233,15 @@
     [(int) (check-value exact-integer? "exact-integer?")]
     [(uint64) (check-value exact-nonnegative-integer? "exact-nonnegative-integer?")]
     [(bytes bytes0) (check-value bytes? "bytes?")])
-  (call-with-socket-ptr who sock
-    (lambda (ptr)
-      (let ([s (case type
-                 [(int)    (zmq_setsockopt/int ptr option value)]
-                 [(int64)  (zmq_setsockopt/int64 ptr option value)]
-                 [(uint64) (zmq_setsockopt/uint64 ptr option value)]
-                 [(bytes bytes0) (zmq_setsockopt/bytes ptr option value)])])
-        (unless (zero? s)
-          (error who "error setting socket option\n  option: ~e\n  value: ~e~a"
-                 option value (errno-lines)))))))
+  (let* ([ptr (socket-ptr sock)]
+         [s (case type
+              [(int)    (zmq_setsockopt/int ptr option value)]
+              [(int64)  (zmq_setsockopt/int64 ptr option value)]
+              [(uint64) (zmq_setsockopt/uint64 ptr option value)]
+              [(bytes bytes0) (zmq_setsockopt/bytes ptr option value)])])
+    (unless (zero? s)
+      (error who "error setting socket option\n  option: ~e\n  value: ~e~a"
+             option value (errno-lines)))))
 
 (define (zmq-list-options mode)
   (sort (for/list ([opt (in-hash-keys option-table)]
@@ -266,40 +261,38 @@
       (if check?
           (for/list ([addr (in-list addrs0)]) (check-endp who addr mode))
           addrs0))
-    (call-with-socket-ptr who sock
-      (lambda (ptr)
-        (for ([addr (in-list addrs)])
-          (let ([s (case mode
-                     [(bind) (zmq_bind ptr addr)]
-                     [(connect) (zmq_connect ptr addr)])])
-            (unless (zero? s)
-              (error who "error ~aing socket\n  address: ~e~a" mode addr (errno-lines)))
-            (-add-end! sock ptr mode addr)))))))
+    (for ([addr (in-list addrs)])
+      (let ([s (case mode
+                 [(bind) (zmq_bind (socket-ptr sock)addr)]
+                 [(connect) (zmq_connect (socket-ptr sock) addr)])])
+        (unless (zero? s)
+          (error who "error ~aing socket\n  address: ~e~a" mode addr (errno-lines)))
+        (-add-end! sock mode addr)))))
 
 (define (zmq-disconnect sock . addrs) (unbind/disconnect 'zmq-disconnect sock addrs 'connect))
 (define (zmq-unbind sock . addrs) (unbind/disconnect 'zmq-unbind sock addrs 'bind))
 
 (define (unbind/disconnect who sock addrs mode)
   (when (pair? addrs)
-    (call-with-socket-ptr who sock
-      (lambda (ptr)
-        (for ([addr (in-list addrs)])
-          (let ([s (case mode
-                     [(bind) (zmq_unbind ptr addr)]
-                     [(connect) (zmq_disconnect ptr addr)])])
-            (unless (zero? s)
-              (error who "error ~a socket\n  address: ~e~a"
-                     (case mode [(bind) "unbinding"] [(connect) "disconnecting"])
-                     addr (errno-lines)))
-            (-sub-end! sock ptr mode addr)))))))
+    (for ([addr (in-list addrs)])
+      (let ([s (case mode
+                 [(bind) (zmq_unbind (socket-ptr sock) addr)]
+                 [(connect) (zmq_disconnect (socket-ptr sock) addr)])])
+        (unless (zero? s)
+          (error who "error ~a socket\n  address: ~e~a"
+                 (case mode [(bind) "unbinding"] [(connect) "disconnecting"])
+                 addr (errno-lines)))
+        (-sub-end! sock mode addr)))))
 
-(define (-add-end! sock ptr mode addr)
-  (define addr* (if (regexp-match? #rx"^(tcp|ipc):" addr)
-                    (bytes->string/utf-8 (zmq_getsockopt/bytes ptr 'last_endpoint -1))
-                    addr))
+(define (-add-end! sock mode addr)
+  (define addr*
+    (if (regexp-match? #rx"^(tcp|ipc):" addr)
+        (bytes->string/utf-8
+          (zmq_getsockopt/bytes (socket-ptr sock) 'last_endpoint -1))
+        addr))
   (set-socket-ends! sock (cons (cons mode addr*) (socket-ends sock))))
 
-(define (-sub-end! sock ptr mode addr)
+(define (-sub-end! sock mode addr)
   (set-socket-ends! sock (remove (cons mode addr) (socket-ends sock))))
 
 ;; ----------------------------------------
@@ -312,12 +305,10 @@
 
 (define (*subscribe who mode sock subs)
   (when (pair? subs)
-    (call-with-socket-ptr who sock
-      (lambda (ptr)
-        (for ([sub (in-list subs)])
-          (let ([s (zmq_setsockopt/bytes ptr mode sub)])
-            (unless (zero? s)
-              (error who "~a error~a" mode (errno-lines)))))))))
+    (for ([sub (in-list subs)])
+      (let ([s (zmq_setsockopt/bytes (socket-ptr sock) mode sub)])
+        (unless (zero? s)
+          (error who "~a error~a" mode (errno-lines)))))))
 
 ;; ----------------------------------------
 ;; Send and Recv
@@ -366,32 +357,29 @@
   (recv-frames who sock null))
 
 (define (recv-frames who sock rframes)
-  ((call-with-socket-ptr who sock #:sema? #f
-     (lambda (ptr) (-recv-frames-k who sock ptr rframes)))))
+  (-recv-frames-k who sock (socket-ptr sock) rframes))
 
 (define (-recv-frames-k who sock ptr rframes)
   (define msg (new-zmq_msg))
   (zmq_msg_init msg)
   (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
   (cond [(>= s 0)
-         (define frame (-get-msg-frame msg))
-         (define more? (zmq_msg_more msg))
-         (zmq_msg_close msg)
-         (cond [more?
-                (-recv-frames-k who sock ptr (cons frame rframes))]
-               [else (lambda () (reverse (cons frame rframes)))])]
+           (define frame (-get-msg-frame msg))
+           (define more? (zmq_msg_more msg))
+           (zmq_msg_close msg)
+           (cond
+             [more? (-recv-frames-k who sock ptr (cons frame rframes))]
+             [else (reverse (cons frame rframes))])]
         [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-         (zmq_msg_close msg)
-         (lambda ()
+           (zmq_msg_close msg)
            (wait who sock ZMQ_POLLIN)
-           (recv-frames who sock rframes))]
+           (recv-frames who sock rframes)]
         [else
-         (zmq_msg_close msg)
-         (lambda ()
+           (zmq_msg_close msg)
            (error who "error receiving message~a~a"
                   (let ([ct (length rframes)])
                     (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
-                  (errno-lines)))]))
+                  (errno-lines))]))
 
 (define (-get-msg-frame msg)
   (define size (zmq_msg_size msg))
