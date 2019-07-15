@@ -356,10 +356,9 @@
   (recv-frames who sock null))
 
 (define (recv-frames who sock rframes)
-  (-recv-frames-k who sock (socket-ptr sock) rframes))
+  (-recv-frames-k who sock (socket-ptr sock) (new-zmq_msg) rframes))
 
-(define (-recv-frames-k who sock ptr rframes)
-  (define msg (new-zmq_msg))
+(define (-recv-frames-k who sock ptr msg rframes)
   (zmq_msg_init msg)
   (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
   (cond [(>= s 0)
@@ -372,7 +371,7 @@
         [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
            (zmq_msg_close msg)
            (wait who sock ZMQ_POLLIN)
-           (recv-frames who sock rframes)]
+           (-recv-frames-k who sock ptr msg rframes)]
         [else
            (zmq_msg_close msg)
            (error who "error receiving message~a~a"
@@ -390,11 +389,29 @@
 ; as given. Also don't decode the data into racket
 (define (zmq-proxy left right)
   (sync (zmq-evt left) (zmq-evt right))
-  (when (zmq-ready? left ZMQ_POLLIN)
-    (proxy-fwd (new-zmq_msg) (socket-ptr left) (socket-ptr right)))
-  (when (zmq-ready? right ZMQ_POLLIN)
-    (proxy-fwd (new-zmq_msg) (socket-ptr right) (socket-ptr left))))
+  (let ([msg (new-zmq_msg)])
+    (proxy-fwd-all msg left right)
+    (proxy-fwd-all msg right left)))
 
+; Forward all ready sets of frames on a particular endpoint
+(define (proxy-fwd-all msg src dst)
+  (when (zmq-ready? src ZMQ_POLLIN)
+    (proxy-fwd msg (socket-ptr src) (socket-ptr dst))
+    (proxy-fwd-all msg src dst)))
+
+; Check send error codes
+(define (proxy-send msg dst moreflag)
+  (let ([s (zmq_msg_send msg dst moreflag)])
+    (cond
+      [(>= s 0) (void)]
+      [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
+        (proxy-send msg dst moreflag)]
+      [else
+        (error 'proxy-send
+               "error sending to proxy endpoint: ~a"
+               (saved-errno))])))
+
+; This expects socket pointers not zmq-socket%s
 (define (proxy-fwd msg src dst)
   (let* ([s (begin
               (zmq_msg_init msg)
@@ -405,7 +422,7 @@
                        '(ZMQ_NOFLAGS))])
     (cond
       [(>= s 0)
-        (zmq_msg_send msg dst moreflag)
+        (proxy-send msg dst moreflag)
         (zmq_msg_close msg)
         (when more (proxy-fwd msg src dst))]
       [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
