@@ -96,9 +96,9 @@
 ;; ============================================================
 ;; Socket
 
-;; A Socket is (socket (U _zmq_socket-pointer #f) Sema (Listof Endpoint))
+;; A Socket is (socket (U _zmq_socket-pointer #f) (Listof Endpoint))
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket ([ptr #:mutable] sema [ends #:mutable] fd)
+(struct socket ([ptr #:mutable] [ends #:mutable] fd)
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
@@ -143,7 +143,7 @@
   (unless ptr
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
   (define fd (zmq_getsockopt/int ptr 'fd))
-  (define sock (socket ptr (make-semaphore 1) null fd))
+  (define sock (socket ptr null fd))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   ;; Set options, etc.
@@ -166,8 +166,7 @@
                      (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type))
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
-      (define fd (zmq_getsockopt/int ptr 'fd))
-      (fd->evt fd 'remove)
+      (fd->evt (socket-fd sock) 'remove)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
           (log-zmq-error "error closing socket~a" (errno-lines)))))))
