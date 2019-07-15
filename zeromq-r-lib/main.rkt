@@ -67,8 +67,6 @@
 ;; TODO:
 ;;   - add maybe-recv-evt?
 
-;; Convention: procedures starting with "-" must be called in atomic mode.
-
 (define DEFAULT-LINGER 100)
 
 (define-logger zmq)
@@ -157,21 +155,18 @@
   sock)
 
 (define (zmq-close sock)
-  (call-as-atomic
-   (lambda ()
-     (-close 'zmq-close sock))))
+  (-close 'zmq-close sock (socket-ptr sock)))
 
-(define (-close who sock)
-  (let ([ptr (socket-ptr sock)])
-    (when ptr
-      (log-zmq-debug "closing socket (~a)"
-                     (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type))
-      (set-socket-ptr! sock #f)
-      (set-socket-ends! sock null)
-      (fd->evt (socket-fd sock) 'remove)
-      (let ([s (zmq_close ptr)])
-        (unless (zero? s)
-          (log-zmq-error "error closing socket~a" (errno-lines)))))))
+(define (-close who sock ptr)
+  (when ptr
+    (log-zmq-debug "closing socket (~a)"
+                   (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type))
+    (set-socket-ptr! sock #f)
+    (set-socket-ends! sock null)
+    (fd->evt (socket-fd sock) 'remove)
+    (let ([s (zmq_close ptr)])
+      (unless (zero? s)
+        (log-zmq-error "error closing socket~a" (errno-lines))))))
 
 (define (fd->evt fd mode)
   ;; The fd *must* be interpreted as a socket on Windows and Mac OS.
@@ -179,7 +174,7 @@
   (unsafe-socket->semaphore fd mode))
 
 (define (zmq-closed? sock)
-  (call-as-atomic (lambda () (and (socket-ptr sock) #t))))
+  (and (socket-ptr sock) #t))
 
 (define (zmq-list-endpoints sock mode)
   (ends-get (socket-ends sock) mode))
