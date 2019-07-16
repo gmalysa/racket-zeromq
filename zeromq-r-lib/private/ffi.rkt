@@ -282,10 +282,15 @@
 (define-zmq zmq_msg_init_size
   (_fun (m : _zmq_msg-pointer) _size -> _int))
 
+(define (zmq-msg-dealloc msg)
+  (zmq_msg_close msg))
+
 (define (new-zmq_msg)
-  (define p (malloc ZMQ-MSG-SIZE 'atomic-interior))
-  (cpointer-push-tag! p zmq_msg-pointer-tag)
-  p)
+   (define p (malloc ZMQ-MSG-SIZE 'atomic-interior))
+   (cpointer-push-tag! p zmq_msg-pointer-tag)
+   (zmq_msg_init p)
+   (register-finalizer p zmq-msg-dealloc)
+   p)
 
 (define-zmq zmq_msg_data
   (_fun _zmq_msg-pointer -> _pointer))

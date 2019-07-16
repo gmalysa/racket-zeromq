@@ -356,25 +356,22 @@
   (-recv-frames-k who sock (socket-ptr sock) (new-zmq_msg) rframes))
 
 (define (-recv-frames-k who sock ptr msg rframes)
-  (zmq_msg_init msg)
   (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
-  (cond [(>= s 0)
-           (define frame (-get-msg-frame msg))
-           (define more? (zmq_msg_more msg))
-           (zmq_msg_close msg)
-           (cond
-             [more? (-recv-frames-k who sock ptr (cons frame rframes))]
-             [else (reverse (cons frame rframes))])]
-        [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-           (zmq_msg_close msg)
-           (wait who sock ZMQ_POLLIN)
-           (-recv-frames-k who sock ptr msg rframes)]
-        [else
-           (zmq_msg_close msg)
-           (error who "error receiving message~a~a"
-                  (let ([ct (length rframes)])
-                    (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
-                  (errno-lines))]))
+  (cond
+    [(>= s 0)
+      (define frame (-get-msg-frame msg))
+      (define more? (zmq_msg_more msg))
+      (cond
+        [more? (-recv-frames-k who sock ptr (cons frame rframes))]
+        [else (reverse (cons frame rframes))])]
+    [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
+      (wait who sock ZMQ_POLLIN)
+      (-recv-frames-k who sock ptr msg rframes)]
+    [else
+      (error who "error receiving message~a~a"
+             (let ([ct (length rframes)])
+               (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
+             (errno-lines))]))
 
 (define (-get-msg-frame msg)
   (define size (zmq_msg_size msg))
@@ -410,9 +407,7 @@
 
 ; This expects socket pointers not zmq-socket%s
 (define (proxy-fwd msg src dst)
-  (let* ([s (begin
-              (zmq_msg_init msg)
-              (zmq_msg_recv msg src '(ZMQ_NOFLAGS)))]
+  (let* ([s (zmq_msg_recv msg src '(ZMQ_NOFLAGS))]
          [more (zmq_msg_more msg)]
          [moreflag (if more
                        '(ZMQ_SNDMORE)
@@ -420,13 +415,10 @@
     (cond
       [(>= s 0)
         (proxy-send msg dst moreflag)
-        (zmq_msg_close msg)
         (when more (proxy-fwd msg src dst))]
       [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-        (zmq_msg_close msg)
         (proxy-fwd msg src dst)]
       [else
-        (zmq_msg_close msg)
         (error 'proxy-fwd
                "error forwarding between proxy endpoints ~a"
                (saved-errno))])))
