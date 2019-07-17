@@ -334,44 +334,34 @@
       [else (error 'send-frames "error sending message in zmq-send")])))
 
 (define (wait who sock event)
-  (sync (zmq-evt sock))
   (unless (zmq-ready? sock event)
+    (sync (zmq-evt sock))
     (log-zmq-debug "~s wait: socket = ~e" who sock)
     (wait who sock event)))
 
 (define (zmq-recv sock #:who [who 'zmq-recv])
   (define frames (zmq-recv* sock #:who who))
-  (cond [(and (pair? frames) (null? (cdr frames)))
-         (car frames)]
-        [else (error who "received multi-frame message\n  frames: ~s" (length frames))]))
+  (cond
+    [(and (pair? frames) (null? (cdr frames))) (car frames)]
+    [else (error who "received multi-frame message\n  frames: ~s" (length frames))]))
 
 (define (zmq-recv-string sock)
   (define msg (zmq-recv sock #:who 'zmq-recv-string))
   (bytes->string/utf-8 msg))
 
 (define (zmq-recv* sock #:who [who 'zmq-recv*])
-  (recv-frames who sock null))
+  (wait who sock ZMQ_POLLIN)
+  (reverse (-recv-frames-k (socket-ptr sock) (new-zmq_msg) null)))
 
-(define (recv-frames who sock rframes)
-  (-recv-frames-k who sock (socket-ptr sock) (new-zmq_msg) rframes))
-
-(define (-recv-frames-k who sock ptr msg rframes)
-  (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
-  (cond
-    [(>= s 0)
-      (define frame (-get-msg-frame msg))
-      (define more? (zmq_msg_more msg))
-      (cond
-        [more? (-recv-frames-k who sock ptr (cons frame rframes))]
-        [else (reverse (cons frame rframes))])]
-    [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-      (wait who sock ZMQ_POLLIN)
-      (-recv-frames-k who sock ptr msg rframes)]
-    [else
-      (error who "error receiving message~a~a"
-             (let ([ct (length rframes)])
-               (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
-             (errno-lines))]))
+(define (-recv-frames-k ptr msg rframes)
+  (unless (>= (zmq_msg_recv msg ptr '(ZMQ_NOFLAGS)) 0)
+    (if (or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
+        (-recv-frames-k ptr msg rframes)
+        (raise (make-exn:fail:network:errno (cons (saved-errno) 'posix)))))
+  (define frame (-get-msg-frame msg))
+  (if (zmq_msg_more msg)
+      (-recv-frames-k ptr msg (cons frame rframes))
+      (cons frame rframes)))
 
 (define (-get-msg-frame msg)
   (define size (zmq_msg_size msg))
@@ -395,33 +385,21 @@
 
 ; Check send error codes
 (define (proxy-send msg dst moreflag)
-  (let ([s (zmq_msg_send msg dst moreflag)])
-    (cond
-      [(>= s 0) (void)]
-      [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-        (proxy-send msg dst moreflag)]
-      [else
-        (error 'proxy-send
-               "error sending to proxy endpoint: ~a"
-               (saved-errno))])))
+  (unless (>= (zmq_msg_send msg dst moreflag) 0)
+    (if (or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
+        (proxy-send msg dst moreflag)
+        (raise (make-exn:fail:network:errno (cons (saved-errno) 'posix))))))
 
 ; This expects socket pointers not zmq-socket%s
 (define (proxy-fwd msg src dst)
-  (let* ([s (zmq_msg_recv msg src '(ZMQ_NOFLAGS))]
-         [more (zmq_msg_more msg)]
-         [moreflag (if more
-                       '(ZMQ_SNDMORE)
-                       '(ZMQ_NOFLAGS))])
-    (cond
-      [(>= s 0)
-        (proxy-send msg dst moreflag)
-        (when more (proxy-fwd msg src dst))]
-      [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-        (proxy-fwd msg src dst)]
-      [else
-        (error 'proxy-fwd
-               "error forwarding between proxy endpoints ~a"
-               (saved-errno))])))
+  (unless (>= (zmq_msg_recv msg src '(ZMQ_NOFLAGS)) 0)
+    (if (or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
+        (proxy-fwd msg src dst)
+        (raise (make-exn:fail:network:errno (cons (saved-errno) 'posix)))))
+  (define more (zmq_msg_more msg))
+  (define moreflag (if more '(ZMQ_SNDMORE) '(ZMQ_NOFLAGS)))
+  (proxy-send msg dst moreflag)
+  (when more (proxy-fwd msg src dst)))
 
 ;; ============================================================
 
